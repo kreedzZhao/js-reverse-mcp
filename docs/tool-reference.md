@@ -32,11 +32,10 @@
 
 ### `navigate_page`
 
-**Description:** Navigates the currently selected page to a URL, or performs back/forward/reload navigation. Waits for DOMContentLoaded event (not full page load). Default timeout is 10 seconds. After navigation, stale script IDs are cleared and fresh ones are captured automatically when the debugger is enabled. Tracked code URL breakpoints and XHR/Fetch breakpoints are restored across navigation when possible.
+**Description:** Navigates the currently selected page to a URL, or performs back/forward/reload navigation. This tool only navigates; it does not clear cookies, storage, cache, or site data. Waits for DOMContentLoaded event (not full page load). Default timeout is 10 seconds. After navigation, stale script IDs are cleared and fresh ones are captured automatically when the debugger is enabled. Tracked code URL breakpoints and XHR/Fetch breakpoints are restored across navigation when possible.
 
 **Parameters:**
 
-- **ignoreCache** (boolean) _(optional)_: Whether to ignore cache on reload.
 - **timeout** (integer) _(optional)_: Maximum wait time in milliseconds. If set to 0, the default timeout will be used.
 - **type** (enum: "url", "back", "forward", "reload") _(optional)_: Navigate the page by URL, back or forward in history, or reload.
 - **url** (string) _(optional)_: Target URL (only type=url)

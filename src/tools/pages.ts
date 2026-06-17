@@ -84,7 +84,7 @@ export const newPage = defineTool({
 
 export const navigatePage = defineTool({
   name: 'navigate_page',
-  description: `Navigates the currently selected page to a URL, or performs back/forward/reload navigation. Waits for DOMContentLoaded event (not full page load). Default timeout is 10 seconds. After navigation, stale script IDs are cleared and fresh ones are captured automatically when the debugger is enabled. Tracked code URL breakpoints and XHR/Fetch breakpoints are restored across navigation when possible.`,
+  description: `Navigates the currently selected page to a URL, or performs back/forward/reload navigation. This tool only navigates; it does not clear cookies, storage, cache, or site data. Waits for DOMContentLoaded event (not full page load). Default timeout is 10 seconds. After navigation, stale script IDs are cleared and fresh ones are captured automatically when the debugger is enabled. Tracked code URL breakpoints and XHR/Fetch breakpoints are restored across navigation when possible.`,
   annotations: {
     category: ToolCategory.NAVIGATION,
     readOnlyHint: false,
@@ -97,10 +97,6 @@ export const navigatePage = defineTool({
         'Navigate the page by URL, back or forward in history, or reload.',
       ),
     url: zod.string().optional().describe('Target URL (only type=url)'),
-    ignoreCache: zod
-      .boolean()
-      .optional()
-      .describe('Whether to ignore cache on reload.'),
     ...timeoutSchema,
   },
   handler: async (request, response, context) => {
@@ -224,23 +220,10 @@ export const navigatePage = defineTool({
         break;
       case 'reload':
         try {
-          // For ignoreCache, use CDP Page.reload directly
-          if (request.params.ignoreCache) {
-            const session = await context
-              .getSelectedPage()
-              .context()
-              .newCDPSession(page);
-            await session.send('Page.reload', {ignoreCache: true});
-            await page.waitForLoadState('domcontentloaded', {
-              timeout: options.timeout,
-            });
-            await session.detach();
-          } else {
-            await page.reload({
-              ...options,
-              waitUntil: 'domcontentloaded',
-            });
-          }
+          await page.reload({
+            ...options,
+            waitUntil: 'domcontentloaded',
+          });
           response.appendResponseLine(`Successfully reloaded the page.`);
           response.appendResponseLine(
             'Note: Any previously obtained script IDs are now invalid. Use script URLs instead.',
