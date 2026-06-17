@@ -350,6 +350,7 @@ export function analyzeWebSocketFramesV2(
   frames: WebSocketFrame[],
   wsid: number,
   url: string,
+  frameIndices?: number[],
 ): TrafficSummary {
   const sentCount = frames.filter(f => f.direction === 'sent').length;
   const receivedCount = frames.filter(f => f.direction === 'received').length;
@@ -376,6 +377,7 @@ export function analyzeWebSocketFramesV2(
   >();
 
   frames.forEach((frame, index) => {
+    const frameIndex = frameIndices?.[index] ?? index;
     const head4B = getHead4B(frame.payloadData, frame.opcode);
     const size = frame.payloadData.length;
     const sizeCategory = getSizeCategory(size);
@@ -393,7 +395,7 @@ export function analyzeWebSocketFramesV2(
     }
 
     const group = groupMap.get(key)!;
-    group.indices.push(index);
+    group.indices.push(frameIndex);
     group.minSize = Math.min(group.minSize, size);
     group.maxSize = Math.max(group.maxSize, size);
   });
@@ -535,7 +537,7 @@ export function formatGroupMessages(
  */
 export function formatRecentMessages(
   frames: WebSocketFrame[],
-  options?: {pageSize?: number; pageIdx?: number},
+  options?: {pageSize?: number; pageIdx?: number; frameIndices?: number[]},
 ): string[] {
   const lines: string[] = [];
   const pageSize = options?.pageSize ?? 20;
@@ -562,7 +564,7 @@ export function formatRecentMessages(
 
   for (let i = 0; i < paginatedFrames.length; i++) {
     const frame = paginatedFrames[i];
-    const frameIdx = offset + i;
+    const frameIdx = options?.frameIndices?.[offset + i] ?? offset + i;
     const dir = frame.direction === 'sent' ? '↑' : '↓';
     const deltaMs = frame.timestamp - baseTimestamp;
     const timeDelta = formatTimeDelta(deltaMs);

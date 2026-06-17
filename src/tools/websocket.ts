@@ -20,7 +20,7 @@ const DIRECTION_OPTIONS: readonly ['sent', 'received'] = ['sent', 'received'];
 
 export const getWebSocketMessages = defineTool({
   name: 'get_websocket_messages',
-  description: `Lists WebSocket connections or gets messages for a specific connection. Without wsid, lists all connections. With wsid, gets messages. Set analyze=true to group messages by pattern. Use groupId to filter by group. Use frameIndex to get a single message's full detail.`,
+  description: `Lists WebSocket connections or gets messages for a specific connection. Without wsid, lists all connections. With wsid, gets messages. Set analyze=true to group messages by pattern. Use groupId to filter by group. Use frameIndex to get a single message's full detail by the raw frame index shown in message tables and analysis samples.`,
   annotations: {
     category: ToolCategory.NETWORK,
     readOnlyHint: true,
@@ -45,7 +45,7 @@ export const getWebSocketMessages = defineTool({
       .min(0)
       .optional()
       .describe(
-        'Get a single message by its frame index (0-based). Returns full detail for that message.',
+        'Get a single message by its raw frame index (0-based). Use the Idx values shown by message tables or the sample indices returned by analyze=true.',
       ),
     direction: zod
       .enum(DIRECTION_OPTIONS)
@@ -55,7 +55,7 @@ export const getWebSocketMessages = defineTool({
       .string()
       .optional()
       .describe(
-        'Filter by group ID (A, B, C, ...). Run with analyze=true first to get group IDs.',
+        'Filter by group ID (A, B, C, ...). Run with analyze=true first to get group IDs; if analyze used a direction filter, pass the same direction here.',
       ),
     pageSize: zod
       .number()
@@ -63,7 +63,9 @@ export const getWebSocketMessages = defineTool({
       .positive()
       .default(10)
       .optional()
-      .describe('Messages per page (for messages mode) or connections per page (for list mode). Defaults to 10.'),
+      .describe(
+        'Messages per page (for messages mode) or connections per page (for list mode). Defaults to 10.',
+      ),
     pageIdx: zod
       .number()
       .int()
@@ -121,19 +123,33 @@ export const getWebSocketMessages = defineTool({
       return;
     }
 
+    const getFilteredFrames = () => {
+      const frameIndices = ws.frames
+        .map((_, index) => index)
+        .filter(
+          index =>
+            !request.params.direction ||
+            ws.frames[index].direction === request.params.direction,
+        );
+      return {
+        frames: frameIndices.map(index => ws.frames[index]),
+        frameIndices,
+      };
+    };
+
     // Mode: Analyze / group by pattern
     if (request.params.analyze) {
-      let frames = ws.frames;
-      if (request.params.direction) {
-        frames = frames.filter(f => f.direction === request.params.direction);
-      }
+      const {frames, frameIndices} = getFilteredFrames();
 
       const summary = analyzeWebSocketFramesV2(
         frames,
         request.params.wsid,
         ws.connection.url,
+        frameIndices,
       );
-      context.cacheTrafficSummary(request.params.wsid, summary);
+      if (!request.params.direction) {
+        context.cacheTrafficSummary(request.params.wsid, summary);
+      }
 
       const lines = formatTrafficSummary(summary);
       for (const line of lines) {
@@ -151,12 +167,7 @@ export const getWebSocketMessages = defineTool({
       return;
     }
 
-    let frames = ws.frames;
-
-    // Apply direction filter
-    if (request.params.direction) {
-      frames = frames.filter(f => f.direction === request.params.direction);
-    }
+    const {frames, frameIndices} = getFilteredFrames();
 
     const pageSize = request.params.pageSize ?? 10;
     const pageIdx = request.params.pageIdx ?? 0;
@@ -165,17 +176,24 @@ export const getWebSocketMessages = defineTool({
     if (request.params.groupId) {
       const groupId = request.params.groupId.toUpperCase();
 
-      // Try to get cached summary
-      let summary = context.getCachedTrafficSummary(request.params.wsid);
+      // Direction-filtered group IDs are only stable for the same direction,
+      // so compute them from the filtered frame list instead of reusing the
+      // unfiltered cache.
+      let summary = request.params.direction
+        ? undefined
+        : context.getCachedTrafficSummary(request.params.wsid);
 
       // If not cached, analyze and cache
       if (!summary) {
         summary = analyzeWebSocketFramesV2(
-          ws.frames,
+          frames,
           request.params.wsid,
           ws.connection.url,
+          frameIndices,
         );
-        context.cacheTrafficSummary(request.params.wsid, summary);
+        if (!request.params.direction) {
+          context.cacheTrafficSummary(request.params.wsid, summary);
+        }
       }
 
       const indices = summary.groupToIndices.get(groupId);
@@ -216,6 +234,7 @@ export const getWebSocketMessages = defineTool({
     const lines = formatRecentMessages(frames, {
       pageSize,
       pageIdx,
+      frameIndices,
     });
     for (const line of lines) {
       response.appendResponseLine(line);

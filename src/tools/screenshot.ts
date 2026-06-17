@@ -11,7 +11,7 @@ import {defineTool} from './ToolDefinition.js';
 
 export const screenshot = defineTool({
   name: 'take_screenshot',
-  description: `Take a screenshot of the page or element.`,
+  description: `Take a screenshot of the currently selected page. By default captures the visible viewport; set fullPage=true to capture the full page.`,
   annotations: {
     category: ToolCategory.DEBUGGING,
     // Not read-only due to filePath param.
@@ -34,7 +34,7 @@ export const screenshot = defineTool({
       .boolean()
       .optional()
       .describe(
-        'If set to true takes a screenshot of the full page instead of the currently visible viewport. Incompatible with uid.',
+        'If set to true, captures the full page instead of the currently visible viewport.',
       ),
     filePath: zod
       .string()

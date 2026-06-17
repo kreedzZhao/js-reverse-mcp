@@ -94,7 +94,7 @@ export const listNetworkRequests = defineTool({
       .string()
       .optional()
       .describe(
-        'When reqid is provided, save network data to this local file instead of returning only inline text. Use this for exact bytes, large bodies, long GET query payloads, binary responses, replay/signature inputs, or data that will be decoded with external tools. The response reports the resolved absolute path; use that path with evaluate_script localFilePath when browser-side processing is needed.',
+        'When reqid is provided, save network data to this local file instead of returning only inline text. Use this for exact bytes, large bodies, long GET query payloads, binary responses, replay/signature inputs, or data that will be decoded with external tools. Absolute paths and paths relative to the current working directory are supported. The response reports the resolved absolute path; use that path with evaluate_script localFilePath when browser-side processing is needed.',
       ),
     outputPart: zod
       .enum(NETWORK_EXPORT_PARTS)

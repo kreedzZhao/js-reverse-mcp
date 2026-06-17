@@ -86,7 +86,7 @@ async function appendStepSummary(
 export const listScripts = defineTool({
   name: 'list_scripts',
   description:
-    'Lists all JavaScript scripts loaded in the current page. Returns script ID, URL, and source map information. Use this to find scripts before setting breakpoints or searching. Script IDs are automatically refreshed after page navigation, so listed IDs are always valid.',
+    'Lists all JavaScript scripts loaded in the current page. Returns script ID, URL, and source map information. Use this to find scripts before setting breakpoints or searching. Script IDs are valid for the current page load only; after navigation, call list_scripts again or prefer script URLs for follow-up tools.',
   annotations: {
     title: 'List Scripts',
     category: ToolCategory.REVERSE_ENGINEERING,
@@ -152,7 +152,7 @@ export const listScripts = defineTool({
 export const getScriptSource = defineTool({
   name: 'get_script_source',
   description:
-    'Gets a small snippet of a JavaScript script source by URL (recommended) or script ID. Supports line range (for normal files) or character offset (for minified single-line files). Prefer using url over scriptId — URLs remain stable across page navigations while script IDs become invalid after reload. IMPORTANT: This tool is designed for reading small code regions (e.g. around breakpoints or search results). You MUST always specify startLine/endLine or offset/length. To read an entire script file (especially minified ones), use save_script_source instead — it downloads the full source and auto-formats minified code for readability. WASM scripts cannot be read by this tool — it will reject them and direct you to save_script_source.',
+    'Gets a small snippet of a JavaScript script source by URL (recommended) or script ID. Supports line range (for normal files) or character offset (for minified single-line files). Prefer using url over scriptId — URLs remain stable across page navigations while script IDs become invalid after reload. This tool is designed for reading small code regions (e.g. around breakpoints or search results); specify startLine/endLine or offset/length for predictable inline output. If no range is provided, small sources are returned inline and large sources return a preview with guidance. To read an entire script file, especially a minified one, use save_script_source instead. WASM scripts cannot be shown inline; use save_script_source with a .wasm file path.',
   annotations: {
     title: 'Get Script Source',
     category: ToolCategory.REVERSE_ENGINEERING,
@@ -332,7 +332,7 @@ export const getScriptSource = defineTool({
 export const saveScriptSource = defineTool({
   name: 'save_script_source',
   description:
-    'Saves the full source code of a JavaScript script to a local file. PREFERRED over get_script_source whenever you need the whole file or want to grep/read a minified script — this tool auto-formats (beautifies) minified .js/.mjs/.ts output via prettier so the saved file is human-readable. Use this for any non-trivial source inspection; only fall back to get_script_source for tiny known regions (e.g. ±20 lines around a breakpoint). Typical workflow: call save_script_source → then use Read on the saved file (or Bash grep / your editor) to inspect it. NOTE: because the saved file is beautified, its line numbers DO NOT match the original script — if you later need to set a breakpoint, use the original URL/scriptId with set_breakpoint_on_text rather than line numbers from the saved file.',
+    'Saves the full source code of a JavaScript script to a local file. PREFERRED over get_script_source whenever you need the whole file or want to search/read a minified script. This tool auto-formats (beautifies) minified .js/.mjs/.ts output via prettier so the saved file is human-readable. Use this for any non-trivial source inspection; only fall back to get_script_source for tiny known regions (e.g. ±20 lines around a breakpoint). Typical workflow: call save_script_source, then inspect the saved local file with your available file-reading or search tools. NOTE: because the saved file may be beautified, its line numbers may not match the original script. If you later need to set a breakpoint, use the original URL/scriptId with set_breakpoint_on_text rather than line numbers from the saved file.',
   annotations: {
     title: 'Save Script Source',
     category: ToolCategory.REVERSE_ENGINEERING,
@@ -354,7 +354,7 @@ export const saveScriptSource = defineTool({
     filePath: zod
       .string()
       .describe(
-        'Local file path to save the script source to. Use a .js/.mjs/.cjs/.jsx/.ts/.tsx extension to enable auto-format (prettier beautify); other extensions save raw source verbatim. For WASM scripts, use a .wasm extension.',
+        'Local file path to save the script source to. Absolute paths and paths relative to the current working directory are supported. Use a .js/.mjs/.cjs/.jsx/.ts/.tsx extension to enable auto-format (prettier beautify); other extensions save raw source verbatim. For WASM scripts, use a .wasm extension.',
       ),
     format: zod
       .boolean()
@@ -632,7 +632,7 @@ export const searchInSources = defineTool({
 export const removeBreakpoint = defineTool({
   name: 'remove_breakpoint',
   description:
-    'Removes breakpoints and automatically resumes execution if paused. Pass breakpointId to remove a code breakpoint, url to remove an XHR breakpoint, or neither to remove ALL breakpoints (code + XHR).',
+    'Removes breakpoints. Pass breakpointId to remove a code breakpoint, url to remove an XHR breakpoint, or neither to remove ALL breakpoints (code + XHR). If a breakpoint is removed while execution is paused, execution is automatically resumed.',
   annotations: {
     title: 'Remove Breakpoint',
     category: ToolCategory.REVERSE_ENGINEERING,
@@ -707,7 +707,7 @@ export const removeBreakpoint = defineTool({
 export const listBreakpoints = defineTool({
   name: 'list_breakpoints',
   description:
-    'Lists all active breakpoints in the current debugging session. Breakpoints persist across page navigations and are automatically restored after reload/goto/back/forward.',
+    'Lists active code breakpoints and XHR/Fetch URL breakpoints in the current debugging session. Breakpoints are tracked by this MCP session and restored after reload/goto/back/forward when possible.',
   annotations: {
     title: 'List Breakpoints',
     category: ToolCategory.REVERSE_ENGINEERING,
@@ -725,29 +725,40 @@ export const listBreakpoints = defineTool({
     }
 
     const breakpoints = debugger_.getBreakpoints();
+    const xhrBreakpoints = debugger_.getXHRBreakpoints();
 
-    if (breakpoints.length === 0) {
+    if (breakpoints.length === 0 && xhrBreakpoints.length === 0) {
       response.appendResponseLine('No active breakpoints.');
       return;
     }
 
     response.appendResponseLine(
-      `Active breakpoints (${breakpoints.length}):\n`,
+      `Active breakpoints (${breakpoints.length} code, ${xhrBreakpoints.length} XHR/Fetch):\n`,
     );
 
-    for (const bp of breakpoints) {
-      response.appendResponseLine(`- ID: ${bp.breakpointId}`);
-      response.appendResponseLine(`  URL: ${bp.url}`);
-      response.appendResponseLine(
-        `  Line: ${bp.lineNumber + 1}, Column: ${bp.columnNumber}`,
-      );
-      if (bp.condition) {
-        response.appendResponseLine(`  Condition: ${bp.condition}`);
+    if (breakpoints.length > 0) {
+      response.appendResponseLine('Code breakpoints:');
+      for (const bp of breakpoints) {
+        response.appendResponseLine(`- ID: ${bp.breakpointId}`);
+        response.appendResponseLine(`  URL: ${bp.url}`);
+        response.appendResponseLine(
+          `  Line: ${bp.lineNumber + 1}, Column: ${bp.columnNumber}`,
+        );
+        if (bp.condition) {
+          response.appendResponseLine(`  Condition: ${bp.condition}`);
+        }
+        if (bp.locations.length > 0) {
+          response.appendResponseLine(`  Locations: ${bp.locations.length}`);
+        }
+        response.appendResponseLine('');
       }
-      if (bp.locations.length > 0) {
-        response.appendResponseLine(`  Locations: ${bp.locations.length}`);
+    }
+
+    if (xhrBreakpoints.length > 0) {
+      response.appendResponseLine('XHR/Fetch breakpoints:');
+      for (const url of xhrBreakpoints) {
+        response.appendResponseLine(`- URL contains: ${url}`);
       }
-      response.appendResponseLine('');
     }
   },
 });
@@ -1005,7 +1016,7 @@ export const getPausedInfo = defineTool({
     }
 
     response.appendResponseLine(
-      '\n💡 Use resume, step_over, step_into, or step_out to continue.',
+      '\n💡 Use pause_or_resume to resume, or step with direction="over" | "into" | "out" to continue one step.',
     );
   },
 });
@@ -1016,7 +1027,7 @@ export const getPausedInfo = defineTool({
 export const pauseOrResume = defineTool({
   name: 'pause_or_resume',
   description:
-    'Toggles JavaScript execution. If paused, resumes execution. If running, pauses execution.',
+    'Toggles JavaScript execution. If paused, resumes execution. If running, requests a pause at the next JavaScript statement.',
   annotations: {
     title: 'Pause / Resume',
     category: ToolCategory.REVERSE_ENGINEERING,
@@ -1115,7 +1126,7 @@ export const step = defineTool({
 export const setBreakpointOnText = defineTool({
   name: 'set_breakpoint_on_text',
   description:
-    'Sets a breakpoint on specific code (function name, statement, etc.) by searching for it and automatically determining the exact position. Works with both normal and minified files. Breakpoints persist across page navigations.',
+    'Sets a breakpoint on specific code (function name, statement, etc.) by searching loaded scripts and automatically determining a position. Works with both normal and minified URL-backed scripts. Inline/eval scripts without a URL can be found but cannot receive this persistent URL breakpoint. Breakpoints persist across page navigations when the URL can be matched again.',
   annotations: {
     title: 'Set Breakpoint on Text',
     category: ToolCategory.REVERSE_ENGINEERING,

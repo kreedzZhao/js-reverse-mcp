@@ -135,7 +135,7 @@ If localFilePath is provided, the function receives one argument: \`async ({ loc
       .string()
       .optional()
       .describe(
-        'If provided, saves the evaluation result to this local file path instead of returning it in the chat. Useful for dumping large data, ArrayBuffer, or Uint8Array memory regions. The script should return the data you want to dump.',
+        'If provided, saves the evaluation result to this local file path instead of returning it in the chat. JSON-serializable results are saved as JSON text; ArrayBuffer and Uint8Array results are saved as raw bytes. Useful for dumping large data or binary memory regions. The response reports the resolved absolute path.',
       ),
     localFilePath: zod
       .string()

@@ -32,7 +32,7 @@
 
 ### `navigate_page`
 
-**Description:** Navigates the currently selected page to a URL, or performs back/forward/reload navigation. Waits for DOMContentLoaded event (not full page load). Default timeout is 10 seconds. After navigation, stale script IDs are cleared and fresh ones are captured automatically. All breakpoints (URL, XHR, DOM) are preserved across navigation.
+**Description:** Navigates the currently selected page to a URL, or performs back/forward/reload navigation. Waits for DOMContentLoaded event (not full page load). Default timeout is 10 seconds. After navigation, stale script IDs are cleared and fresh ones are captured automatically when the debugger is enabled. Tracked code URL breakpoints and XHR/Fetch breakpoints are restored across navigation when possible.
 
 **Parameters:**
 
@@ -45,12 +45,12 @@
 
 ### `new_page`
 
-**Description:** Creates a new page and navigates to the specified URL. Waits for DOMContentLoaded event (not full page load). Default timeout is 10 seconds.
+**Description:** Opens a browser page and navigates to the specified URL. If an existing about:blank startup tab is still available, it is reused instead of opening an extra tab. Waits for DOMContentLoaded event (not full page load). Default timeout is 10 seconds.
 
 **Parameters:**
 
 - **timeout** (integer) _(optional)_: Maximum wait time in milliseconds. If set to 0, the default timeout will be used.
-- **url** (string) **(required)**: URL to load in a new page.
+- **url** (string) **(required)**: URL to load in the opened browser page.
 
 ---
 
@@ -68,14 +68,14 @@
 
 ### `get_websocket_messages`
 
-**Description:** Lists WebSocket connections or gets messages for a specific connection. Without wsid, lists all connections. With wsid, gets messages. Set analyze=true to group messages by pattern. Use groupId to filter by group. Use frameIndex to get a single message's full detail.
+**Description:** Lists WebSocket connections or gets messages for a specific connection. Without wsid, lists all connections. With wsid, gets messages. Set analyze=true to group messages by pattern. Use groupId to filter by group. Use frameIndex to get a single message's full detail by the raw frame index shown in message tables and analysis samples.
 
 **Parameters:**
 
 - **analyze** (boolean) _(optional)_: Set to true to analyze and group messages by pattern/fingerprint. Returns statistics and sample indices for each message type.
 - **direction** (enum: "sent", "received") _(optional)_: Filter by direction: "sent" or "received".
-- **frameIndex** (integer) _(optional)_: Get a single message by its frame index (0-based). Returns full detail for that message.
-- **groupId** (string) _(optional)_: Filter by group ID (A, B, C, ...). Run with analyze=true first to get group IDs.
+- **frameIndex** (integer) _(optional)_: Get a single message by its raw frame index (0-based). Use the Idx values shown by message tables or the sample indices returned by analyze=true.
+- **groupId** (string) _(optional)_: Filter by group ID (A, B, C, ...). Run with analyze=true first to get group IDs; if analyze used a direction filter, pass the same direction here.
 - **includePreservedConnections** (boolean) _(optional)_: Set to true to return the preserved connections over the last 3 navigations (only for listing connections without wsid).
 - **pageIdx** (integer) _(optional)_: Page number (0-based).
 - **pageSize** (integer) _(optional)_: Messages per page (for messages mode) or connections per page (for list mode). Defaults to 10.
@@ -92,7 +92,7 @@
 **Parameters:**
 
 - **includePreservedRequests** (boolean) _(optional)_: Set to true to return the preserved requests over the last 3 navigations.
-- **outputFile** (string) _(optional)_: When reqid is provided, save network data to this local file instead of returning only inline text. Use this for exact bytes, large bodies, long GET query payloads, binary responses, replay/signature inputs, or data that will be decoded with external tools. The response reports the resolved absolute path; use that path with [`evaluate_script`](#evaluate_script) localFilePath when browser-side processing is needed.
+- **outputFile** (string) _(optional)_: When reqid is provided, save network data to this local file instead of returning only inline text. Use this for exact bytes, large bodies, long GET query payloads, binary responses, replay/signature inputs, or data that will be decoded with external tools. Absolute paths and paths relative to the current working directory are supported. The response reports the resolved absolute path; use that path with [`evaluate_script`](#evaluate_script) localFilePath when browser-side processing is needed.
 - **outputPart** (enum: "all", "responseBody", "requestBody", "queryParams") _(optional)_: Which part to export when outputFile is provided. "responseBody" saves raw response bytes, "requestBody" saves captured request body bytes, "queryParams" saves parsed URL query parameters as JSON, and "all" saves a JSON bundle with metadata, headers, query params, and body content/metadata. Defaults to "all".
 - **pageIdx** (integer) _(optional)_: Page number to return (0-based). When omitted, returns the first page.
 - **pageSize** (integer) _(optional)_: Maximum number of requests to return. Defaults to 20.
@@ -122,7 +122,7 @@ so returned values have to JSON-serializable. When execution is paused at a brea
 
 - **localFilePath** (string) _(optional)_: Absolute path to one local file to pass to the evaluated function as localFile. Relative paths, file:// URLs, globs, ~, and directories are rejected. If provided, write the function as async ({ localFile }) => { ... }. Use localFile.text when present for UTF-8 text/JSON and localFile.base64 for exact bytes.
 - **mainWorld** (boolean) _(optional)_: Execute the function in the page main world instead of the default isolated context. Use this when you need to access page-defined globals (e.g. window.bdms, window.app). Async functions are supported, and returned values must be JSON-serializable unless outputFile is used for binary data.
-- **outputFile** (string) _(optional)_: If provided, saves the evaluation result to this local file path instead of returning it in the chat. Useful for dumping large data, ArrayBuffer, or Uint8Array memory regions. The script should return the data you want to dump.
+- **outputFile** (string) _(optional)_: If provided, saves the evaluation result to this local file path instead of returning it in the chat. JSON-serializable results are saved as JSON text; ArrayBuffer and Uint8Array results are saved as raw bytes. Useful for dumping large data or binary memory regions. The response reports the resolved absolute path.
 
 ---
 
@@ -135,14 +135,14 @@ so returned values have to JSON-serializable. When execution is paused at a brea
 - **includePreservedMessages** (boolean) _(optional)_: Set to true to return the preserved messages over the last 3 navigations.
 - **msgid** (number) _(optional)_: The msgid of a console message on the page from the listed console messages
 - **pageIdx** (integer) _(optional)_: Page number to return (0-based). When omitted, returns the first page.
-- **pageSize** (integer) _(optional)_: Maximum number of messages to return. When omitted, returns all requests.
-- **types** (array) _(optional)_: Filter messages to only return messages of the specified resource types. When omitted or empty, returns all messages.
+- **pageSize** (integer) _(optional)_: Maximum number of messages to return. When omitted, returns all messages.
+- **types** (array) _(optional)_: Filter messages to only return messages of the specified console message types. When omitted or empty, returns all messages.
 
 ---
 
 ### `select_frame`
 
-**Description:** Lists all frames (including iframes) in the current page. Pass frameIdx to switch execution context to that frame for [`evaluate_script`](#evaluate_script) and other tools.
+**Description:** Lists all frames (including iframes) in the current page. Pass frameIdx to switch the execution context used by [`evaluate_script`](#evaluate_script). Other tools may still operate at page level.
 
 **Parameters:**
 
@@ -152,13 +152,13 @@ so returned values have to JSON-serializable. When execution is paused at a brea
 
 ### `take_screenshot`
 
-**Description:** Take a screenshot of the page or element.
+**Description:** Take a screenshot of the currently selected page. By default captures the visible viewport; set fullPage=true to capture the full page.
 
 **Parameters:**
 
 - **filePath** (string) _(optional)_: The absolute path, or a path relative to the current working directory, to save the screenshot to instead of attaching it to the response.
 - **format** (enum: "png", "jpeg") _(optional)_: Type of format to save the screenshot as. Default is "png"
-- **fullPage** (boolean) _(optional)_: If set to true takes a screenshot of the full page instead of the currently visible viewport. Incompatible with uid.
+- **fullPage** (boolean) _(optional)_: If set to true, captures the full page instead of the currently visible viewport.
 - **quality** (number) _(optional)_: Compression quality for JPEG format (0-100). Higher values mean better quality but larger file sizes. Ignored for PNG format.
 
 ---
@@ -199,7 +199,7 @@ so returned values have to JSON-serializable. When execution is paused at a brea
 
 ### `get_script_source`
 
-**Description:** Gets a small snippet of a JavaScript script source by URL (recommended) or script ID. Supports line range (for normal files) or character offset (for minified single-line files). Prefer using url over scriptId — URLs remain stable across page navigations while script IDs become invalid after reload. IMPORTANT: This tool is designed for reading small code regions (e.g. around breakpoints or search results). You MUST always specify startLine/endLine or offset/length. To read an entire script file (especially minified ones), use [`save_script_source`](#save_script_source) instead — it downloads the full source and auto-formats minified code for readability. WASM scripts cannot be read by this tool — it will reject them and direct you to [`save_script_source`](#save_script_source).
+**Description:** Gets a small snippet of a JavaScript script source by URL (recommended) or script ID. Supports line range (for normal files) or character offset (for minified single-line files). Prefer using url over scriptId — URLs remain stable across page navigations while script IDs become invalid after reload. This tool is designed for reading small code regions (e.g. around breakpoints or search results); specify startLine/endLine or offset/length for predictable inline output. If no range is provided, small sources are returned inline and large sources return a preview with guidance. To read an entire script file, especially a minified one, use [`save_script_source`](#save_script_source) instead. WASM scripts cannot be shown inline; use [`save_script_source`](#save_script_source) with a .wasm file path.
 
 **Parameters:**
 
@@ -214,7 +214,7 @@ so returned values have to JSON-serializable. When execution is paused at a brea
 
 ### `list_breakpoints`
 
-**Description:** Lists all active breakpoints in the current debugging session. Breakpoints persist across page navigations and are automatically restored after reload/goto/back/forward.
+**Description:** Lists active code breakpoints and XHR/Fetch URL breakpoints in the current debugging session. Breakpoints are tracked by this MCP session and restored after reload/goto/back/forward when possible.
 
 **Parameters:** None
 
@@ -222,7 +222,7 @@ so returned values have to JSON-serializable. When execution is paused at a brea
 
 ### `list_scripts`
 
-**Description:** Lists all JavaScript scripts loaded in the current page. Returns script ID, URL, and source map information. Use this to find scripts before setting breakpoints or searching. Script IDs are automatically refreshed after page navigation, so listed IDs are always valid.
+**Description:** Lists all JavaScript scripts loaded in the current page. Returns script ID, URL, and source map information. Use this to find scripts before setting breakpoints or searching. Script IDs are valid for the current page load only; after navigation, call [`list_scripts`](#list_scripts) again or prefer script URLs for follow-up tools.
 
 **Parameters:**
 
@@ -232,7 +232,7 @@ so returned values have to JSON-serializable. When execution is paused at a brea
 
 ### `pause_or_resume`
 
-**Description:** Toggles JavaScript execution. If paused, resumes execution. If running, pauses execution.
+**Description:** Toggles JavaScript execution. If paused, resumes execution. If running, requests a pause at the next JavaScript statement.
 
 **Parameters:** None
 
@@ -240,7 +240,7 @@ so returned values have to JSON-serializable. When execution is paused at a brea
 
 ### `remove_breakpoint`
 
-**Description:** Removes breakpoints and automatically resumes execution if paused. Pass breakpointId to remove a code breakpoint, url to remove an XHR breakpoint, or neither to remove ALL breakpoints (code + XHR).
+**Description:** Removes breakpoints. Pass breakpointId to remove a code breakpoint, url to remove an XHR breakpoint, or neither to remove ALL breakpoints (code + XHR). If a breakpoint is removed while execution is paused, execution is automatically resumed.
 
 **Parameters:**
 
@@ -251,11 +251,11 @@ so returned values have to JSON-serializable. When execution is paused at a brea
 
 ### `save_script_source`
 
-**Description:** Saves the full source code of a JavaScript script to a local file. PREFERRED over [`get_script_source`](#get_script_source) whenever you need the whole file or want to grep/read a minified script — this tool auto-formats (beautifies) minified .js/.mjs/.ts output via prettier so the saved file is human-readable. Use this for any non-trivial source inspection; only fall back to [`get_script_source`](#get_script_source) for tiny known regions (e.g. ±20 lines around a breakpoint). Typical workflow: call [`save_script_source`](#save_script_source) → then use Read on the saved file (or Bash grep / your editor) to inspect it. NOTE: because the saved file is beautified, its line numbers DO NOT match the original script — if you later need to set a breakpoint, use the original URL/scriptId with [`set_breakpoint_on_text`](#set_breakpoint_on_text) rather than line numbers from the saved file.
+**Description:** Saves the full source code of a JavaScript script to a local file. PREFERRED over [`get_script_source`](#get_script_source) whenever you need the whole file or want to search/read a minified script. This tool auto-formats (beautifies) minified .js/.mjs/.ts output via prettier so the saved file is human-readable. Use this for any non-trivial source inspection; only fall back to [`get_script_source`](#get_script_source) for tiny known regions (e.g. ±20 lines around a breakpoint). Typical workflow: call [`save_script_source`](#save_script_source), then inspect the saved local file with your available file-reading or search tools. NOTE: because the saved file may be beautified, its line numbers may not match the original script. If you later need to set a breakpoint, use the original URL/scriptId with [`set_breakpoint_on_text`](#set_breakpoint_on_text) rather than line numbers from the saved file.
 
 **Parameters:**
 
-- **filePath** (string) **(required)**: Local file path to save the script source to. Use a .js/.mjs/.cjs/.jsx/.ts/.tsx extension to enable auto-format (prettier beautify); other extensions save raw source verbatim. For WASM scripts, use a .wasm extension.
+- **filePath** (string) **(required)**: Local file path to save the script source to. Absolute paths and paths relative to the current working directory are supported. Use a .js/.mjs/.cjs/.jsx/.ts/.tsx extension to enable auto-format (prettier beautify); other extensions save raw source verbatim. For WASM scripts, use a .wasm extension.
 - **format** (boolean) _(optional)_: Auto-format JavaScript/TypeScript output with prettier (beautifies minified code). Defaults to true. Set to false to save the raw original source verbatim.
 - **scriptId** (string) _(optional)_: Script ID (from [`list_scripts`](#list_scripts)). Becomes invalid after page navigation — prefer url instead.
 - **url** (string) _(optional)_: Script URL (preferred). Stable across page navigations. Exact match first, then substring match.
@@ -280,7 +280,7 @@ so returned values have to JSON-serializable. When execution is paused at a brea
 
 ### `set_breakpoint_on_text`
 
-**Description:** Sets a breakpoint on specific code (function name, statement, etc.) by searching for it and automatically determining the exact position. Works with both normal and minified files. Breakpoints persist across page navigations.
+**Description:** Sets a breakpoint on specific code (function name, statement, etc.) by searching loaded scripts and automatically determining a position. Works with both normal and minified URL-backed scripts. Inline/eval scripts without a URL can be found but cannot receive this persistent URL breakpoint. Breakpoints persist across page navigations when the URL can be matched again.
 
 **Parameters:**
 

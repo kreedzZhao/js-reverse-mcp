@@ -26,7 +26,7 @@ function getFrameDepth(frame: Frame): number {
 export const selectFrame = defineTool({
   name: 'select_frame',
   description:
-    'Lists all frames (including iframes) in the current page. Pass frameIdx to switch execution context to that frame for evaluate_script and other tools.',
+    'Lists all frames (including iframes) in the current page. Pass frameIdx to switch the execution context used by evaluate_script. Other tools may still operate at page level.',
   annotations: {
     title: 'Select Frame',
     category: ToolCategory.DEBUGGING,

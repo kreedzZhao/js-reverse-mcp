@@ -548,7 +548,7 @@ export class McpContext implements Context {
       return {filename: filePath};
     } catch (err) {
       this.logger(err);
-      throw new Error('Could not save a screenshot to a file', {cause: err});
+      throw new Error('Could not save file', {cause: err});
     }
   }
 

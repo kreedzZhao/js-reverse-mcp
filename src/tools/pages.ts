@@ -47,13 +47,13 @@ const DEFAULT_REFERER = 'https://www.google.com/';
 
 export const newPage = defineTool({
   name: 'new_page',
-  description: `Creates a new page and navigates to the specified URL. Waits for DOMContentLoaded event (not full page load). Default timeout is 10 seconds.`,
+  description: `Opens a browser page and navigates to the specified URL. If an existing about:blank startup tab is still available, it is reused instead of opening an extra tab. Waits for DOMContentLoaded event (not full page load). Default timeout is 10 seconds.`,
   annotations: {
     category: ToolCategory.NAVIGATION,
     readOnlyHint: false,
   },
   schema: {
-    url: zod.string().describe('URL to load in a new page.'),
+    url: zod.string().describe('URL to load in the opened browser page.'),
     ...timeoutSchema,
   },
   handler: async (request, response, context) => {
@@ -84,7 +84,7 @@ export const newPage = defineTool({
 
 export const navigatePage = defineTool({
   name: 'navigate_page',
-  description: `Navigates the currently selected page to a URL, or performs back/forward/reload navigation. Waits for DOMContentLoaded event (not full page load). Default timeout is 10 seconds. After navigation, stale script IDs are cleared and fresh ones are captured automatically. All breakpoints (URL, XHR, DOM) are preserved across navigation.`,
+  description: `Navigates the currently selected page to a URL, or performs back/forward/reload navigation. Waits for DOMContentLoaded event (not full page load). Default timeout is 10 seconds. After navigation, stale script IDs are cleared and fresh ones are captured automatically when the debugger is enabled. Tracked code URL breakpoints and XHR/Fetch breakpoints are restored across navigation when possible.`,
   annotations: {
     category: ToolCategory.NAVIGATION,
     readOnlyHint: false,
@@ -226,9 +226,14 @@ export const navigatePage = defineTool({
         try {
           // For ignoreCache, use CDP Page.reload directly
           if (request.params.ignoreCache) {
-            const session = await context.getSelectedPage().context().newCDPSession(page);
+            const session = await context
+              .getSelectedPage()
+              .context()
+              .newCDPSession(page);
             await session.send('Page.reload', {ignoreCache: true});
-            await page.waitForLoadState('domcontentloaded', {timeout: options.timeout});
+            await page.waitForLoadState('domcontentloaded', {
+              timeout: options.timeout,
+            });
             await session.detach();
           } else {
             await page.reload({

@@ -63,7 +63,7 @@ export const listConsoleMessages = defineTool({
       .positive()
       .optional()
       .describe(
-        'Maximum number of messages to return. When omitted, returns all requests.',
+        'Maximum number of messages to return. When omitted, returns all messages.',
       ),
     pageIdx: zod
       .number()
@@ -77,7 +77,7 @@ export const listConsoleMessages = defineTool({
       .array(zod.enum(FILTERABLE_MESSAGE_TYPES))
       .optional()
       .describe(
-        'Filter messages to only return messages of the specified resource types. When omitted or empty, returns all messages.',
+        'Filter messages to only return messages of the specified console message types. When omitted or empty, returns all messages.',
       ),
     includePreservedMessages: zod
       .boolean()
