@@ -18,6 +18,25 @@ const LIST_URL_CONTEXT_LIMIT = 240;
 const LONG_URL_LIMIT = 2000;
 const LONG_QUERY_LIMIT = 1000;
 const SET_COOKIE_CONTEXT_SIZE_LIMIT = 1024;
+const COOKIE_HEADER_NAME_LIMIT = 10;
+
+const SENSITIVE_HEADER_EXACT_NAMES = new Set([
+  'authorization',
+  'cookie',
+  'proxy-authorization',
+  'x-api-key',
+]);
+
+const SENSITIVE_HEADER_NAME_FRAGMENTS = [
+  'token',
+  'secret',
+  'password',
+  'api-key',
+  'apikey',
+  'session',
+  'csrf',
+  'xsrf',
+];
 
 type RequestTiming = ReturnType<HTTPRequest['timing']>;
 type TimingSource = 'browser' | 'observed';
@@ -52,6 +71,7 @@ export interface HeaderEntry {
 interface HeaderFormatOptions {
   sizeLimit?: number;
   omittedLabel?: string;
+  redactSensitiveValues?: boolean;
 }
 
 type BodySnapshot =
@@ -220,8 +240,14 @@ export function getFormattedHeaderEntries(
 ): string[] {
   const sizeLimit = options.sizeLimit ?? HEADER_CONTEXT_SIZE_LIMIT;
   const omittedLabel = options.omittedLabel ?? 'header entries';
+  const redactSensitiveValues = options.redactSensitiveValues ?? true;
   return getSizeLimitedLines(
-    headers.map(({name, value}) => `- ${name}:${value}`),
+    headers.map(({name, value}) => {
+      const formattedValue = redactSensitiveValues
+        ? formatInlineHeaderValue(name, value)
+        : value;
+      return `- ${name}:${formattedValue}`;
+    }),
     sizeLimit,
     omittedLabel,
   );
@@ -397,6 +423,11 @@ export async function getNetworkRequestExportHints(
   const requestHeaders = await getRequestHeadersArray(httpRequest).catch(
     () => [],
   );
+  if (headersContainSensitiveValues(requestHeaders)) {
+    hints.push(
+      `Sensitive request header values are redacted inline. For exact request headers, re-run with outputPart="all" and outputFile="network-req-${reqid}.json".`,
+    );
+  }
   if (headersWillBeTruncated(requestHeaders)) {
     hints.push(
       `Request headers are truncated inline. For exact request headers, re-run with outputPart="all" and outputFile="network-req-${reqid}.json".`,
@@ -408,14 +439,20 @@ export async function getNetworkRequestExportHints(
     const headers = httpResponse.headers();
     const responseHeadersArray = await getResponseHeadersArray(httpResponse);
     const setCookieHeaders = getSetCookieHeaders(responseHeadersArray);
+    const responseHeadersWithoutSetCookie =
+      getHeadersExcludingSetCookie(responseHeadersArray);
     const contentType = getHeaderValue(headers, 'content-type');
     const sizes = await httpRequest.sizes().catch(() => undefined);
     const responseBodySize = sizes?.responseBodySize ?? 0;
 
+    if (headersContainSensitiveValues(responseHeadersWithoutSetCookie)) {
+      hints.push(
+        `Sensitive response header values are redacted inline. For exact response headers, re-run with outputPart="responseHeaders" and outputFile="network-req-${reqid}-response-headers.json".`,
+      );
+    }
+
     if (
-      headersWillBeTruncated(
-        getHeadersExcludingSetCookie(responseHeadersArray),
-      ) ||
+      headersWillBeTruncated(responseHeadersWithoutSetCookie) ||
       setCookiesWillBeTruncated(setCookieHeaders)
     ) {
       hints.push(
@@ -443,6 +480,69 @@ function getSizeLimitedString(text: string, sizeLimit: number) {
   }
 
   return `${text}`;
+}
+
+function formatInlineHeaderValue(name: string, value: string): string {
+  const normalizedName = name.toLowerCase();
+
+  if (normalizedName === 'set-cookie') {
+    return value;
+  }
+
+  if (normalizedName === 'cookie') {
+    const names = getCookieHeaderNames(value);
+    if (!names.length) {
+      return `<redacted cookie header, ${value.length} chars>`;
+    }
+
+    const shown = names.slice(0, COOKIE_HEADER_NAME_LIMIT).join(', ');
+    const remaining = names.length - COOKIE_HEADER_NAME_LIMIT;
+    return `<redacted cookie header; names: ${shown}${remaining > 0 ? `, +${remaining} more` : ''}; ${value.length} chars>`;
+  }
+
+  if (
+    normalizedName === 'authorization' ||
+    normalizedName === 'proxy-authorization'
+  ) {
+    const scheme = value.trim().match(/^([A-Za-z][A-Za-z0-9._~+/-]*)\s+/)?.[1];
+    return `<redacted authorization${scheme ? `; scheme: ${scheme}` : ''}; ${value.length} chars>`;
+  }
+
+  if (isSensitiveHeaderName(normalizedName)) {
+    return `<redacted sensitive header; ${value.length} chars>`;
+  }
+
+  return value;
+}
+
+function getCookieHeaderNames(value: string): string[] {
+  return value
+    .split(';')
+    .map(part => part.trim())
+    .filter(Boolean)
+    .map(part => {
+      const eq = part.indexOf('=');
+      return (eq === -1 ? part : part.slice(0, eq)).trim();
+    })
+    .filter(Boolean);
+}
+
+function isSensitiveHeaderName(normalizedName: string): boolean {
+  if (normalizedName === 'set-cookie') {
+    return false;
+  }
+
+  if (SENSITIVE_HEADER_EXACT_NAMES.has(normalizedName)) {
+    return true;
+  }
+
+  return SENSITIVE_HEADER_NAME_FRAGMENTS.some(fragment =>
+    normalizedName.includes(fragment),
+  );
+}
+
+export function headersContainSensitiveValues(headers: HeaderEntry[]): boolean {
+  return headers.some(({name}) => isSensitiveHeaderName(name.toLowerCase()));
 }
 
 function getFormattedTextBody(
