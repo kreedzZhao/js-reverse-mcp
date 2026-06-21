@@ -191,19 +191,23 @@ function formatPayload(
 
   // Text data - try to format as JSON if possible
   let formattedPayload = payload;
+  let prefix = '';
 
   try {
     const parsed = JSON.parse(payload);
-    formattedPayload = JSON.stringify(parsed, null, 2);
+    formattedPayload = JSON.stringify(parsed);
+    if (formattedPayload.length < payload.length) {
+      prefix = '<JSON payload compacted for inline preview>\n';
+    }
   } catch {
     // Not JSON, use raw payload
   }
 
   if (formattedPayload.length > sizeLimit) {
-    return formattedPayload.slice(0, sizeLimit) + '... <truncated>';
+    return `${prefix}${formattedPayload.slice(0, sizeLimit)}... <truncated ${formattedPayload.length - sizeLimit} chars>`;
   }
 
-  return formattedPayload;
+  return `${prefix}${formattedPayload}`;
 }
 
 // ============================================================================
