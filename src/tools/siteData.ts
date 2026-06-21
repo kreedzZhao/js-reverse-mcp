@@ -66,8 +66,9 @@ export const clearSiteData = defineTool({
       ).values(),
     ];
     const frameOrigins = [
-      ...new Map(frameUrls.map(frameUrl => [frameUrl.origin, frameUrl.origin]))
-        .values(),
+      ...new Map(
+        frameUrls.map(frameUrl => [frameUrl.origin, frameUrl.origin]),
+      ).values(),
     ];
     const warnings: string[] = [];
     let cookieCount: number | undefined;
