@@ -11,8 +11,10 @@ import type {HTTPRequest, HTTPResponse} from '../third_party/index.js';
 
 const BODY_CONTEXT_SIZE_LIMIT = 4096;
 const BODY_FETCH_TIMEOUT_MS = 5000;
+const FORM_FIELD_PREVIEW_LIMIT = 20;
 const HEADER_CONTEXT_SIZE_LIMIT = 4096;
 const LIST_SET_COOKIE_NAME_LIMIT = 5;
+const LIST_URL_CONTEXT_LIMIT = 240;
 const LONG_URL_LIMIT = 2000;
 const LONG_QUERY_LIMIT = 1000;
 const SET_COOKIE_CONTEXT_SIZE_LIMIT = 1024;
@@ -95,7 +97,7 @@ export function getShortDescriptionForRequest(
   id: number,
   selectedInDevToolsUI = false,
 ): string {
-  return `reqid=${id} ${getFormattedRequestTimingBrief(request)} [${request.resourceType()}] ${request.method()} ${request.url()} ${getStatusFromRequest(request)}${selectedInDevToolsUI ? ` [selected in the DevTools Network panel]` : ''}`;
+  return `reqid=${id} ${getFormattedRequestTimingBrief(request)} [${request.resourceType()}] ${request.method()} ${getUrlForList(request.url())} ${getStatusFromRequest(request)}${selectedInDevToolsUI ? ` [selected in the DevTools Network panel]` : ''}`;
 }
 
 export async function getShortDescriptionForRequestAsync(
@@ -108,7 +110,7 @@ export async function getShortDescriptionForRequestAsync(
   const setCookieMarker = includeSetCookieMarker
     ? await getSetCookieListMarker(request)
     : '';
-  return `reqid=${id} ${getFormattedRequestTimingBrief(request)} [${request.resourceType()}] ${request.method()} ${request.url()} ${status}${setCookieMarker}${selectedInDevToolsUI ? ` [selected in the DevTools Network panel]` : ''}`;
+  return `reqid=${id} ${getFormattedRequestTimingBrief(request)} [${request.resourceType()}] ${request.method()} ${getUrlForList(request.url())} ${status}${setCookieMarker}${selectedInDevToolsUI ? ` [selected in the DevTools Network panel]` : ''}`;
 }
 
 export function getFormattedRequestTimingBrief(request: HTTPRequest): string {
@@ -247,12 +249,21 @@ export async function getFormattedResponseBody(
 
     if (isUtf8(responseBuffer)) {
       const responseAsTest = responseBuffer.toString('utf-8');
+      const contentType = getHeaderValue(
+        httpResponse.headers(),
+        'content-type',
+      );
 
       if (responseAsTest.length === 0) {
         return `<empty response>`;
       }
 
-      return `${getSizeLimitedString(responseAsTest, sizeLimit)}`;
+      return getFormattedTextBody(
+        responseAsTest,
+        contentType,
+        sizeLimit,
+        'responseBody',
+      );
     }
 
     return `<binary data>`;
@@ -269,7 +280,8 @@ export async function getFormattedRequestBody(
   const data = httpRequest.postData();
 
   if (data) {
-    return `${getSizeLimitedString(data, sizeLimit)}`;
+    const contentType = getHeaderValue(httpRequest.headers(), 'content-type');
+    return getFormattedTextBody(data, contentType, sizeLimit, 'requestBody');
   }
 
   return;
@@ -431,6 +443,197 @@ function getSizeLimitedString(text: string, sizeLimit: number) {
   }
 
   return `${text}`;
+}
+
+function getFormattedTextBody(
+  text: string,
+  contentType: string,
+  sizeLimit: number,
+  exactPart: 'requestBody' | 'responseBody',
+): string {
+  const normalizedContentType = contentType.toLowerCase();
+
+  if (isMultipartContentType(normalizedContentType)) {
+    return getMultipartBodySummary(text, contentType, exactPart);
+  }
+
+  if (isHtmlContentType(normalizedContentType)) {
+    const compacted = compactMarkupForPreview(text);
+    return formatPreviewWithNote(
+      `HTML body compacted for inline preview; export ${exactPart} for exact bytes.`,
+      compacted,
+      sizeLimit,
+    );
+  }
+
+  if (isXmlContentType(normalizedContentType)) {
+    const compacted = compactMarkupForPreview(text);
+    return formatPreviewWithNote(
+      `XML body compacted for inline preview; export ${exactPart} for exact bytes.`,
+      compacted,
+      sizeLimit,
+    );
+  }
+
+  if (isJsonContentType(normalizedContentType) || looksLikeJson(text)) {
+    const compacted = compactJsonForPreview(text);
+    if (compacted) {
+      return formatPreviewWithNote(
+        `JSON body compacted for inline preview; export ${exactPart} for exact bytes.`,
+        compacted,
+        sizeLimit,
+      );
+    }
+  }
+
+  if (isFormUrlEncodedContentType(normalizedContentType)) {
+    return getFormUrlEncodedPreview(text, sizeLimit, exactPart);
+  }
+
+  return getSizeLimitedString(text, sizeLimit);
+}
+
+function formatPreviewWithNote(
+  note: string,
+  text: string,
+  sizeLimit: number,
+): string {
+  const prefix = `<${note}>\n`;
+  const textLimit = Math.max(0, sizeLimit - prefix.length);
+  return `${prefix}${getSizeLimitedString(text, textLimit)}`;
+}
+
+function compactJsonForPreview(text: string): string | undefined {
+  try {
+    return JSON.stringify(JSON.parse(text));
+  } catch {
+    return undefined;
+  }
+}
+
+function compactMarkupForPreview(text: string): string {
+  return text
+    .replace(
+      /<(script|style|pre|textarea)\b([^>]*)>[\s\S]*?<\/\1>/gi,
+      (block, tag: string, attrs: string) => {
+        const normalizedAttrs = attrs ? attrs.replace(/\s+/g, ' ').trim() : '';
+        const open = normalizedAttrs
+          ? `<${tag} ${normalizedAttrs}>`
+          : `<${tag}>`;
+        return `${open}<${tag} content omitted: ${block.length} chars></${tag}>`;
+      },
+    )
+    .replace(/>\s+</g, '><')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function getFormUrlEncodedPreview(
+  text: string,
+  sizeLimit: number,
+  exactPart: 'requestBody' | 'responseBody',
+): string {
+  const params = new URLSearchParams(text);
+  const entries = [...params.entries()];
+  const shown = entries
+    .slice(0, FORM_FIELD_PREVIEW_LIMIT)
+    .map(([name, value]) => `${name}=${value}`);
+  const omitted = entries.length - shown.length;
+  const preview = `${shown.join('&')}${omitted > 0 ? `&... <${omitted} more fields>` : ''}`;
+  return formatPreviewWithNote(
+    `Form URL-encoded body preview: ${entries.length} fields, ${text.length} chars; export ${exactPart} for exact bytes.`,
+    preview,
+    sizeLimit,
+  );
+}
+
+function getMultipartBodySummary(
+  text: string,
+  contentType: string,
+  exactPart: 'requestBody' | 'responseBody',
+): string {
+  const boundary = /boundary=(?:"([^"]+)"|([^;]+))/i.exec(contentType);
+  const boundaryValue = boundary?.[1] ?? boundary?.[2]?.trim();
+  const parts = boundaryValue
+    ? text
+        .split(`--${boundaryValue}`)
+        .filter(part => part.trim() && part.trim() !== '--')
+    : [];
+  const partSummaries = parts.slice(0, FORM_FIELD_PREVIEW_LIMIT).map(part => {
+    const name = /name="([^"]+)"/i.exec(part)?.[1] ?? '<unnamed>';
+    const filename = /filename="([^"]*)"/i.exec(part)?.[1];
+    const partContentType =
+      /content-type:\s*([^\r\n]+)/i.exec(part)?.[1]?.trim() ?? '';
+    return `${name}${filename !== undefined ? ` file="${filename}"` : ''}${partContentType ? ` type="${partContentType}"` : ''}`;
+  });
+
+  return [
+    `<multipart body hidden from inline preview; export ${exactPart} for exact bytes>`,
+    `Parts: ${parts.length || 'unknown'}`,
+    ...(partSummaries.length ? [`Preview: ${partSummaries.join(', ')}`] : []),
+  ].join('\n');
+}
+
+function isHtmlContentType(contentType: string): boolean {
+  return contentType.includes('text/html');
+}
+
+function isXmlContentType(contentType: string): boolean {
+  return (
+    contentType.includes('xml') ||
+    contentType.includes('image/svg+xml') ||
+    contentType.includes('application/xhtml+xml')
+  );
+}
+
+function isJsonContentType(contentType: string): boolean {
+  return (
+    contentType.includes('application/json') ||
+    contentType.includes('+json') ||
+    contentType.includes('text/json')
+  );
+}
+
+function isFormUrlEncodedContentType(contentType: string): boolean {
+  return contentType.includes('application/x-www-form-urlencoded');
+}
+
+function isMultipartContentType(contentType: string): boolean {
+  return contentType.includes('multipart/form-data');
+}
+
+function looksLikeJson(text: string): boolean {
+  const trimmed = text.trimStart();
+  return trimmed.startsWith('{') || trimmed.startsWith('[');
+}
+
+function getUrlForList(urlString: string): string {
+  if (urlString.length <= LIST_URL_CONTEXT_LIMIT) {
+    return urlString;
+  }
+
+  try {
+    const url = new URL(urlString);
+    const queryLength = url.search.length ? url.search.length - 1 : 0;
+    const queryEntries = [...url.searchParams].length;
+    const base = `${url.origin}${url.pathname}`;
+    const suffix = queryLength
+      ? `?... [query: ${queryEntries} params, ${queryLength} chars]`
+      : url.hash
+        ? '#...'
+        : '';
+    const baseLimit = Math.max(40, LIST_URL_CONTEXT_LIMIT - suffix.length);
+    return `${getStartLimitedString(base, baseLimit)}${suffix}`;
+  } catch {
+    return getStartLimitedString(urlString, LIST_URL_CONTEXT_LIMIT);
+  }
+}
+
+function getStartLimitedString(text: string, sizeLimit: number): string {
+  if (text.length <= sizeLimit) {
+    return text;
+  }
+  return `${text.slice(0, Math.max(0, sizeLimit - 3))}...`;
 }
 
 function getSizeLimitedLines(
