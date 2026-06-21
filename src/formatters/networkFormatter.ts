@@ -6,13 +6,28 @@
 
 import {isUtf8} from 'node:buffer';
 
+import {networkRequestObservedAtSymbol} from '../PageCollector.js';
 import type {HTTPRequest, HTTPResponse} from '../third_party/index.js';
 
-const BODY_CONTEXT_SIZE_LIMIT = 10000;
+const BODY_CONTEXT_SIZE_LIMIT = 4096;
 const BODY_FETCH_TIMEOUT_MS = 5000;
+const HEADER_CONTEXT_SIZE_LIMIT = 4096;
+const LIST_SET_COOKIE_NAME_LIMIT = 5;
 const LONG_URL_LIMIT = 2000;
 const LONG_QUERY_LIMIT = 1000;
-const LARGE_REQUEST_BODY_LIMIT = 8192;
+const SET_COOKIE_CONTEXT_SIZE_LIMIT = 1024;
+
+type RequestTiming = ReturnType<HTTPRequest['timing']>;
+type TimingSource = 'browser' | 'observed';
+
+interface RequestWithObservedAt extends HTTPRequest {
+  [networkRequestObservedAtSymbol]?: number;
+}
+
+interface RequestStartTiming {
+  epochMs: number;
+  source: TimingSource;
+}
 
 export type NetworkExportPart =
   | 'all'
@@ -30,6 +45,11 @@ interface QueryPayload {
 export interface HeaderEntry {
   name: string;
   value: string;
+}
+
+interface HeaderFormatOptions {
+  sizeLimit?: number;
+  omittedLabel?: string;
 }
 
 type BodySnapshot =
@@ -75,7 +95,7 @@ export function getShortDescriptionForRequest(
   id: number,
   selectedInDevToolsUI = false,
 ): string {
-  return `reqid=${id} [${request.resourceType()}] ${request.method()} ${request.url()} ${getStatusFromRequest(request)}${selectedInDevToolsUI ? ` [selected in the DevTools Network panel]` : ''}`;
+  return `reqid=${id} ${getFormattedRequestTimingBrief(request)} [${request.resourceType()}] ${request.method()} ${request.url()} ${getStatusFromRequest(request)}${selectedInDevToolsUI ? ` [selected in the DevTools Network panel]` : ''}`;
 }
 
 export async function getShortDescriptionForRequestAsync(
@@ -85,11 +105,58 @@ export async function getShortDescriptionForRequestAsync(
   includeSetCookieMarker = false,
 ): Promise<string> {
   const status = await getStatusFromRequestAsync(request);
-  const setCookieMarker =
-    includeSetCookieMarker && (await requestHasSetCookie(request))
-      ? ' [set-cookie]'
-      : '';
-  return `reqid=${id} [${request.resourceType()}] ${request.method()} ${request.url()} ${status}${setCookieMarker}${selectedInDevToolsUI ? ` [selected in the DevTools Network panel]` : ''}`;
+  const setCookieMarker = includeSetCookieMarker
+    ? await getSetCookieListMarker(request)
+    : '';
+  return `reqid=${id} ${getFormattedRequestTimingBrief(request)} [${request.resourceType()}] ${request.method()} ${request.url()} ${status}${setCookieMarker}${selectedInDevToolsUI ? ` [selected in the DevTools Network panel]` : ''}`;
+}
+
+export function getFormattedRequestTimingBrief(request: HTTPRequest): string {
+  const timing = request.timing();
+  const start = getRequestStartTiming(request, timing);
+  const startText = start
+    ? `${start.source === 'observed' ? 'observed ' : ''}${formatLocalTimestamp(start.epochMs)}`
+    : 'time unavailable';
+  const durationText = isAvailableTiming(timing.responseEnd)
+    ? formatDuration(timing.responseEnd)
+    : 'pending';
+  return `[${startText}, ${durationText}]`;
+}
+
+export function getFormattedRequestTiming(request: HTTPRequest): string[] {
+  const timing = request.timing();
+  const start = getRequestStartTiming(request, timing);
+  const responseEnd = isAvailableTiming(timing.responseEnd)
+    ? formatDuration(timing.responseEnd)
+    : 'pending';
+  const lines: string[] = [];
+
+  if (start) {
+    const label = start.source === 'browser' ? 'Start' : 'Observed';
+    lines.push(`- ${label}: ${formatLocalTimestamp(start.epochMs)}`);
+    lines.push(`- ${label} epoch ms: ${Math.round(start.epochMs)}`);
+  } else {
+    lines.push('- Start: unavailable');
+  }
+
+  lines.push(`- Duration: ${responseEnd}`);
+  lines.push(
+    `- TTFB: ${formatTimingSpan(timing.requestStart, timing.responseStart)}`,
+  );
+  lines.push(
+    `- DNS: ${formatTimingSpan(timing.domainLookupStart, timing.domainLookupEnd)}`,
+  );
+  lines.push(
+    `- Connect: ${formatTimingSpan(timing.connectStart, timing.connectEnd)}`,
+  );
+  lines.push(
+    `- SSL: ${formatTimingSpan(timing.secureConnectionStart, timing.connectEnd)}`,
+  );
+  lines.push(`- Request start: ${formatRelativeTiming(timing.requestStart)}`);
+  lines.push(`- Response start: ${formatRelativeTiming(timing.responseStart)}`);
+  lines.push(`- Response end: ${formatRelativeTiming(timing.responseEnd)}`);
+
+  return lines;
 }
 
 export function getStatusFromRequest(request: HTTPRequest): string {
@@ -139,8 +206,33 @@ export async function requestHasSetCookie(
   }
 }
 
-export function getFormattedHeaderEntries(headers: HeaderEntry[]): string[] {
-  return headers.map(({name, value}) => `- ${name}:${value}`);
+export function getHeadersExcludingSetCookie(
+  headers: HeaderEntry[],
+): HeaderEntry[] {
+  return headers.filter(({name}) => name.toLowerCase() !== 'set-cookie');
+}
+
+export function getFormattedHeaderEntries(
+  headers: HeaderEntry[],
+  options: HeaderFormatOptions = {},
+): string[] {
+  const sizeLimit = options.sizeLimit ?? HEADER_CONTEXT_SIZE_LIMIT;
+  const omittedLabel = options.omittedLabel ?? 'header entries';
+  return getSizeLimitedLines(
+    headers.map(({name, value}) => `- ${name}:${value}`),
+    sizeLimit,
+    omittedLabel,
+  );
+}
+
+export function getFormattedSetCookieEntries(
+  setCookieHeaders: string[],
+): string[] {
+  return getSizeLimitedLines(
+    setCookieHeaders.map(value => `- ${value}`),
+    SET_COOKIE_CONTEXT_SIZE_LIMIT,
+    'Set-Cookie entries',
+  );
 }
 
 export async function getFormattedResponseBody(
@@ -284,18 +376,40 @@ export async function getNetworkRequestExportHints(
     );
   }
 
-  if (requestBody && requestBody.length > LARGE_REQUEST_BODY_LIMIT) {
+  if (requestBody && requestBody.length > BODY_CONTEXT_SIZE_LIMIT) {
     hints.push(
       `Request body is ${requestBody.length} bytes. For exact request bytes, re-run with outputPart="requestBody" and outputFile="network-req-${reqid}-request-body.bin".`,
+    );
+  }
+
+  const requestHeaders = await getRequestHeadersArray(httpRequest).catch(
+    () => [],
+  );
+  if (headersWillBeTruncated(requestHeaders)) {
+    hints.push(
+      `Request headers are truncated inline. For exact request headers, re-run with outputPart="all" and outputFile="network-req-${reqid}.json".`,
     );
   }
 
   const httpResponse = await httpRequest.response();
   if (httpResponse) {
     const headers = httpResponse.headers();
+    const responseHeadersArray = await getResponseHeadersArray(httpResponse);
+    const setCookieHeaders = getSetCookieHeaders(responseHeadersArray);
     const contentType = getHeaderValue(headers, 'content-type');
     const sizes = await httpRequest.sizes().catch(() => undefined);
     const responseBodySize = sizes?.responseBodySize ?? 0;
+
+    if (
+      headersWillBeTruncated(
+        getHeadersExcludingSetCookie(responseHeadersArray),
+      ) ||
+      setCookiesWillBeTruncated(setCookieHeaders)
+    ) {
+      hints.push(
+        `Response headers are truncated inline. For exact response headers and Set-Cookie values, re-run with outputPart="responseHeaders" and outputFile="network-req-${reqid}-response-headers.json".`,
+      );
+    }
 
     if (isLikelyBinaryContentType(contentType)) {
       hints.push(
@@ -313,10 +427,55 @@ export async function getNetworkRequestExportHints(
 
 function getSizeLimitedString(text: string, sizeLimit: number) {
   if (text.length > sizeLimit) {
-    return `${text.substring(0, sizeLimit) + '... <truncated>'}`;
+    return `${text.substring(0, sizeLimit)}... <truncated ${text.length - sizeLimit} chars>`;
   }
 
   return `${text}`;
+}
+
+function getSizeLimitedLines(
+  lines: string[],
+  sizeLimit: number,
+  omittedLabel: string,
+): string[] {
+  const result: string[] = [];
+  let used = 0;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const lineSize = line.length + 1;
+    if (used + lineSize <= sizeLimit) {
+      result.push(line);
+      used += lineSize;
+      continue;
+    }
+
+    const remaining = sizeLimit - used;
+    if (remaining > 40) {
+      result.push(getSizeLimitedString(line, remaining));
+    }
+    result.push(
+      `- ... <truncated ${lines.length - i} ${omittedLabel}; use outputFile for exact values>`,
+    );
+    break;
+  }
+
+  return result;
+}
+
+function headersWillBeTruncated(headers: HeaderEntry[]): boolean {
+  return headerLinesSize(headers) > HEADER_CONTEXT_SIZE_LIMIT;
+}
+
+function setCookiesWillBeTruncated(setCookieHeaders: string[]): boolean {
+  return (
+    setCookieHeaders.map(value => `- ${value}`).join('\n').length >
+    SET_COOKIE_CONTEXT_SIZE_LIMIT
+  );
+}
+
+function headerLinesSize(headers: HeaderEntry[]): number {
+  return headers.map(({name, value}) => `- ${name}:${value}`).join('\n').length;
 }
 
 async function getNetworkRequestSnapshot(httpRequest: HTTPRequest) {
@@ -358,7 +517,89 @@ async function getNetworkRequestSnapshot(httpRequest: HTTPRequest) {
     responseBody,
     sizes,
     timing: httpRequest.timing(),
+    observedAt: getObservedAt(httpRequest),
   };
+}
+
+function getRequestStartTiming(
+  request: HTTPRequest,
+  timing: RequestTiming,
+): RequestStartTiming | undefined {
+  if (Number.isFinite(timing.startTime) && timing.startTime > 0) {
+    return {
+      epochMs: timing.startTime,
+      source: 'browser',
+    };
+  }
+
+  const observedAt = getObservedAt(request);
+  if (observedAt !== undefined) {
+    return {
+      epochMs: observedAt,
+      source: 'observed',
+    };
+  }
+
+  return undefined;
+}
+
+function getObservedAt(request: HTTPRequest): number | undefined {
+  const observedAt = (request as RequestWithObservedAt)[
+    networkRequestObservedAtSymbol
+  ];
+  return typeof observedAt === 'number' &&
+    Number.isFinite(observedAt) &&
+    observedAt > 0
+    ? observedAt
+    : undefined;
+}
+
+function isAvailableTiming(value: number): boolean {
+  return Number.isFinite(value) && value >= 0;
+}
+
+function formatLocalTimestamp(epochMs: number): string {
+  const date = new Date(epochMs);
+  const timezoneOffsetMinutes = -date.getTimezoneOffset();
+  const timezoneSign = timezoneOffsetMinutes >= 0 ? '+' : '-';
+  const absoluteOffset = Math.abs(timezoneOffsetMinutes);
+
+  return `${date.getFullYear()}-${padNumber(date.getMonth() + 1)}-${padNumber(date.getDate())} ${padNumber(date.getHours())}:${padNumber(date.getMinutes())}:${padNumber(date.getSeconds())}.${padNumber(date.getMilliseconds(), 3)} ${timezoneSign}${padNumber(Math.floor(absoluteOffset / 60))}:${padNumber(absoluteOffset % 60)}`;
+}
+
+function padNumber(value: number, length = 2): string {
+  return `${value}`.padStart(length, '0');
+}
+
+function formatDuration(valueMs: number): string {
+  if (!Number.isFinite(valueMs) || valueMs < 0) {
+    return 'unavailable';
+  }
+  if (valueMs < 1000) {
+    return `${Math.round(valueMs)}ms`;
+  }
+  if (valueMs < 10000) {
+    return `${(valueMs / 1000).toFixed(2)}s`;
+  }
+  return `${(valueMs / 1000).toFixed(1)}s`;
+}
+
+function formatTimingSpan(startMs: number, endMs: number): string {
+  if (
+    !isAvailableTiming(startMs) ||
+    !isAvailableTiming(endMs) ||
+    endMs < startMs
+  ) {
+    return 'unavailable';
+  }
+  return `${formatDuration(endMs - startMs)} (${formatRelativeTiming(startMs)} to ${formatRelativeTiming(endMs)})`;
+}
+
+function formatRelativeTiming(valueMs: number): string {
+  if (!isAvailableTiming(valueMs)) {
+    return 'unavailable';
+  }
+  return `+${formatDuration(valueMs)}`;
 }
 
 export async function getRequestHeadersArray(
@@ -405,6 +646,37 @@ export function getSetCookieHeaders(
   return headersArray
     .filter(({name}) => name.toLowerCase() === 'set-cookie')
     .map(({value}) => value);
+}
+
+async function getSetCookieListMarker(request: HTTPRequest): Promise<string> {
+  const httpResponse = await request.response();
+  if (!httpResponse) {
+    return '';
+  }
+
+  try {
+    const setCookieHeaders = getSetCookieHeaders(
+      await getResponseHeadersArray(httpResponse),
+    );
+    if (!setCookieHeaders.length) {
+      return '';
+    }
+
+    const names = setCookieHeaders.map(getSetCookieName);
+    const shown = names.slice(0, LIST_SET_COOKIE_NAME_LIMIT).join(', ');
+    const remaining = names.length - LIST_SET_COOKIE_NAME_LIMIT;
+    return ` set-cookie: ${shown}${remaining > 0 ? `, +${remaining} more` : ''}`;
+  } catch {
+    return ' set-cookie';
+  }
+}
+
+function getSetCookieName(setCookieHeader: string): string {
+  const eq = setCookieHeader.indexOf('=');
+  if (eq <= 0) {
+    return '<unnamed>';
+  }
+  return setCookieHeader.slice(0, eq).trim() || '<unnamed>';
 }
 
 async function readResponseBody(

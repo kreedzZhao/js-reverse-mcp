@@ -127,6 +127,9 @@ function createIdGenerator() {
 }
 
 export const stableIdSymbol = Symbol('stableIdSymbol');
+export const networkRequestObservedAtSymbol = Symbol(
+  'networkRequestObservedAtSymbol',
+);
 type WithSymbolId<T> = T & {
   [stableIdSymbol]?: number;
 };
@@ -510,8 +513,9 @@ class PageIssueSubscriber {
 }
 
 const cdpRequestIdSymbol = Symbol('cdpRequestId');
-type RequestWithCdpId = HTTPRequest & {
+type RequestWithNetworkMetadata = HTTPRequest & {
   [cdpRequestIdSymbol]?: string;
+  [networkRequestObservedAtSymbol]?: number;
 };
 
 export class NetworkCollector extends PageCollector<HTTPRequest> {
@@ -533,6 +537,8 @@ export class NetworkCollector extends PageCollector<HTTPRequest> {
         (collect => {
           return {
             request: req => {
+              const request = req as RequestWithNetworkMetadata;
+              request[networkRequestObservedAtSymbol] = Date.now();
               collect(req);
             },
           } as ListenerMap;
@@ -593,7 +599,7 @@ export class NetworkCollector extends PageCollector<HTTPRequest> {
         if (navigations) {
           for (const navigation of navigations) {
             for (const request of navigation) {
-              const req = request as RequestWithCdpId;
+              const req = request as RequestWithNetworkMetadata;
               if (
                 !req[cdpRequestIdSymbol] &&
                 req.url() === event.request.url &&
@@ -645,7 +651,7 @@ export class NetworkCollector extends PageCollector<HTTPRequest> {
    * Get the CDP request ID for a request.
    */
   getCdpRequestId(request: HTTPRequest): string | undefined {
-    return (request as RequestWithCdpId)[cdpRequestIdSymbol];
+    return (request as RequestWithNetworkMetadata)[cdpRequestIdSymbol];
   }
 
   /**
