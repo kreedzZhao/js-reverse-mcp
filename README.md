@@ -139,6 +139,9 @@ npm run build
 | ------------------------ | ----------------------------------------------- |
 | `list_network_requests`  | 列出网络请求，或按 reqid 获取单条详情           |
 | `get_request_initiator`  | 获取网络请求的 JavaScript 调用栈                |
+| `replace_response`       | 按 URL 模式替换响应 body，适合替换 restored JS  |
+| `list_response_replacements` | 列出当前响应替换规则和命中次数             |
+| `clear_response_replacements` | 清理响应替换规则                         |
 | `get_websocket_messages` | 列出 WebSocket 连接、分析消息模式或获取消息详情 |
 
 ### 检查工具

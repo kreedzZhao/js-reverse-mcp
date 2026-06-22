@@ -24,10 +24,16 @@ import type {
   Frame,
   HTTPRequest,
   Page,
+  Route,
 } from './third_party/index.js';
 import {selectPage} from './tools/pages.js';
 import {CLOSE_PAGE_ERROR} from './tools/ToolDefinition.js';
-import type {Context, DevToolsData} from './tools/ToolDefinition.js';
+import type {
+  Context,
+  DevToolsData,
+  ResponseReplacementInfo,
+  ResponseReplacementInput,
+} from './tools/ToolDefinition.js';
 import type {TraceResult} from './trace-processing/parse.js';
 import {WaitForHelper} from './WaitForHelper.js';
 import type {WebSocketData} from './WebSocketCollector.js';
@@ -35,6 +41,8 @@ import {WebSocketCollector} from './WebSocketCollector.js';
 
 const DEFAULT_TIMEOUT = 5_000;
 const NAVIGATION_TIMEOUT = 10_000;
+
+type StoredResponseReplacement = ResponseReplacementInfo;
 
 function getNetworkMultiplierFromString(condition: string | null): number {
   switch (condition) {
@@ -62,6 +70,26 @@ function getExtensionFromMimeType(mimeType: string) {
   throw new Error(`No mapping for Mime type ${mimeType}.`);
 }
 
+function matchesReplacementUrl(
+  url: string,
+  pattern: string,
+  regex = false,
+): boolean {
+  if (regex) {
+    return new RegExp(pattern).test(url);
+  }
+  if (pattern.includes('*')) {
+    return new RegExp(
+      `^${pattern.split('*').map(escapeRegex).join('.*')}$`,
+    ).test(url);
+  }
+  return url.includes(pattern);
+}
+
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 export class McpContext implements Context {
   browserContext: BrowserContext;
   sessionProvider: CdpSessionProvider;
@@ -84,6 +112,9 @@ export class McpContext implements Context {
 
   #traceResults: TraceResult[] = [];
   #trafficSummaryCache = new Map<number, TrafficSummary>();
+  #responseReplacementSeq = 0;
+  #responseReplacements = new Map<number, StoredResponseReplacement>();
+  #responseReplacementRoutePages = new WeakSet<Page>();
 
   #navigationTimeout = NAVIGATION_TIMEOUT;
 
@@ -290,6 +321,7 @@ export class McpContext implements Context {
     if (this.#collectorsInitialized) {
       await this.#webSocketCollector.addPage(page);
     }
+    await this.#ensureResponseReplacementRoute(page);
     return page;
   }
   async closePage(pageIdx: number): Promise<void> {
@@ -385,8 +417,101 @@ export class McpContext implements Context {
     this.#selectedFrame = undefined;
     newPage.on('dialog', this.#dialogHandler);
     this.#updateSelectedPageTimeouts();
+    void this.#ensureResponseReplacementRoute(newPage);
     // Reinitialize debugger for the new page
     void this.reinitDebugger();
+  }
+
+  async addResponseReplacement(
+    replacement: ResponseReplacementInput,
+  ): Promise<ResponseReplacementInfo> {
+    const info: StoredResponseReplacement = {
+      ...replacement,
+      id: ++this.#responseReplacementSeq,
+      active: true,
+      hitCount: 0,
+      status: replacement.status ?? 200,
+      headers: replacement.headers ?? {},
+      resourceTypes: replacement.resourceTypes ?? [],
+      once: replacement.once ?? false,
+    };
+    this.#responseReplacements.set(info.id, info);
+    await this.#ensureResponseReplacementRoute(this.getSelectedPage());
+    return {...info};
+  }
+
+  listResponseReplacements(): ResponseReplacementInfo[] {
+    return [...this.#responseReplacements.values()].map(item => ({...item}));
+  }
+
+  async clearResponseReplacements(filter?: {
+    id?: number;
+    urlPattern?: string;
+    all?: boolean;
+  }): Promise<ResponseReplacementInfo[]> {
+    const removed: ResponseReplacementInfo[] = [];
+    for (const [id, replacement] of this.#responseReplacements.entries()) {
+      const shouldRemove =
+        filter?.all ||
+        filter?.id === id ||
+        (filter?.urlPattern !== undefined &&
+          replacement.urlPattern === filter.urlPattern) ||
+        (!filter?.all && filter?.id === undefined && filter?.urlPattern === undefined);
+      if (!shouldRemove) {
+        continue;
+      }
+      this.#responseReplacements.delete(id);
+      replacement.active = false;
+      removed.push({...replacement});
+    }
+    return removed;
+  }
+
+  async #ensureResponseReplacementRoute(page: Page): Promise<void> {
+    if (this.#responseReplacementRoutePages.has(page)) {
+      return;
+    }
+    this.#responseReplacementRoutePages.add(page);
+    await page.route('**/*', async (route: Route) => {
+      const replacement = this.#findResponseReplacement(route);
+      if (!replacement) {
+        await route.continue();
+        return;
+      }
+
+      replacement.hitCount += 1;
+      if (replacement.once) {
+        replacement.active = false;
+      }
+
+      await route.fulfill({
+        status: replacement.status ?? 200,
+        contentType: replacement.contentType,
+        headers: replacement.headers,
+        body: replacement.body,
+      });
+    });
+  }
+
+  #findResponseReplacement(route: Route): StoredResponseReplacement | undefined {
+    const request = route.request();
+    const url = request.url();
+    const resourceType = request.resourceType();
+    for (const replacement of this.#responseReplacements.values()) {
+      if (!replacement.active) {
+        continue;
+      }
+      if (
+        replacement.resourceTypes?.length &&
+        !replacement.resourceTypes.includes(resourceType)
+      ) {
+        continue;
+      }
+      if (matchesReplacementUrl(url, replacement.urlPattern, replacement.regex)) {
+        return replacement;
+      }
+    }
+    return undefined;
   }
 
   getSelectedFrame(): Frame {

@@ -33,6 +33,7 @@ export type {
   CDPSession,
   Request,
   Response,
+  Route,
   ConsoleMessage,
   Dialog,
   JSHandle,

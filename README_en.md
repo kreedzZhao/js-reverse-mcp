@@ -139,6 +139,9 @@ When to enable `--cloak`: only for sites that block you on fingerprint despite a
 | ------------------------ | -------------------------------------------------------------------- |
 | `list_network_requests`  | List network requests, or get one by reqid                           |
 | `get_request_initiator`  | Get JavaScript call stack for a network request                      |
+| `replace_response`       | Replace response body by URL pattern, useful for restored JS         |
+| `list_response_replacements` | List response replacement rules and hit counts                  |
+| `clear_response_replacements` | Clear response replacement rules                              |
 | `get_websocket_messages` | List WebSocket connections, analyze messages, or get message details |
 
 ### Inspection

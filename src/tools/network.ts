@@ -4,6 +4,9 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import fs from 'node:fs/promises';
+import path from 'node:path';
+
 import {
   type NetworkExportPart,
   exportNetworkRequestPart,
@@ -148,5 +151,156 @@ export const listNetworkRequests = defineTool({
       includePreservedRequests: request.params.includePreservedRequests,
       networkRequestIdInDevToolsUI: reqid,
     });
+  },
+});
+
+export const replaceResponse = defineTool({
+  name: 'replace_response',
+  description:
+    'Install a response replacement rule for the selected page. Matching requests are fulfilled with the provided body/bodyFile, status, contentType, and headers. Use this to swap a restored JavaScript chunk into a live site while keeping the browser debugging workflow intact.',
+  annotations: {
+    title: 'Replace Response',
+    category: ToolCategory.NETWORK,
+    readOnlyHint: false,
+  },
+  schema: {
+    urlPattern: zod
+      .string()
+      .describe(
+        'URL substring, glob, or regex pattern to match. Plain strings use contains semantics; patterns with * use glob semantics; set regex=true for regular expressions.',
+      ),
+    regex: zod
+      .boolean()
+      .default(false)
+      .optional()
+      .describe('Treat urlPattern as a JavaScript regular expression.'),
+    body: zod
+      .string()
+      .optional()
+      .describe('Inline replacement body. Prefer bodyFile for large scripts.'),
+    bodyFile: zod
+      .string()
+      .optional()
+      .describe(
+        'Read replacement body from this local file. Absolute paths and paths relative to the MCP process working directory are supported.',
+      ),
+    status: zod
+      .number()
+      .int()
+      .min(100)
+      .max(599)
+      .default(200)
+      .optional()
+      .describe('HTTP status for the fulfilled response. Defaults to 200.'),
+    contentType: zod
+      .string()
+      .optional()
+      .describe(
+        'Content-Type for the fulfilled response, for example application/javascript; charset=utf-8.',
+      ),
+    headers: zod
+      .record(zod.string(), zod.string())
+      .default({})
+      .optional()
+      .describe('Additional response headers to include.'),
+    resourceTypes: zod
+      .array(zod.string())
+      .default([])
+      .optional()
+      .describe(
+        'Optional Playwright resourceType filter, for example ["script"]. Empty means all resource types.',
+      ),
+    once: zod
+      .boolean()
+      .default(false)
+      .optional()
+      .describe('Disable this replacement after the first hit.'),
+  },
+  handler: async (request, response, context) => {
+    const {body, bodyFile} = request.params;
+    if ((body === undefined && bodyFile === undefined) || (body && bodyFile)) {
+      response.appendResponseLine(
+        'Provide exactly one of body or bodyFile for replace_response.',
+      );
+      return;
+    }
+
+    const replacementBody =
+      bodyFile !== undefined
+        ? await fs.readFile(path.resolve(bodyFile), 'utf8')
+        : body!;
+    const replacement = await context.addResponseReplacement({
+      urlPattern: request.params.urlPattern,
+      regex: request.params.regex,
+      body: replacementBody,
+      status: request.params.status,
+      contentType: request.params.contentType,
+      headers: request.params.headers,
+      resourceTypes: request.params.resourceTypes,
+      once: request.params.once,
+    });
+
+    response.appendResponseLine(
+      `Installed response replacement #${replacement.id} for ${replacement.urlPattern}. Body length: ${replacement.body.length} bytes.`,
+    );
+  },
+});
+
+export const listResponseReplacements = defineTool({
+  name: 'list_response_replacements',
+  description:
+    'List active and inactive response replacement rules, including hit counts.',
+  annotations: {
+    title: 'List Response Replacements',
+    category: ToolCategory.NETWORK,
+    readOnlyHint: true,
+  },
+  schema: {},
+  handler: async (_request, response, context) => {
+    const replacements = context.listResponseReplacements();
+    if (!replacements.length) {
+      response.appendResponseLine('No response replacements installed.');
+      return;
+    }
+    for (const replacement of replacements) {
+      response.appendResponseLine(
+        `#${replacement.id} ${replacement.active ? 'active' : 'inactive'} hits=${replacement.hitCount} pattern=${replacement.urlPattern} status=${replacement.status ?? 200} contentType=${replacement.contentType ?? '(default)'}`,
+      );
+    }
+  },
+});
+
+export const clearResponseReplacements = defineTool({
+  name: 'clear_response_replacements',
+  description:
+    'Clear response replacement rules by id, by exact urlPattern, or all rules. If no selector is provided, clears all rules.',
+  annotations: {
+    title: 'Clear Response Replacements',
+    category: ToolCategory.NETWORK,
+    readOnlyHint: false,
+  },
+  schema: {
+    id: zod.number().int().positive().optional().describe('Replacement id.'),
+    urlPattern: zod
+      .string()
+      .optional()
+      .describe('Exact urlPattern to clear.'),
+    all: zod
+      .boolean()
+      .default(false)
+      .optional()
+      .describe('Clear all replacement rules.'),
+  },
+  handler: async (request, response, context) => {
+    const removed = await context.clearResponseReplacements({
+      id: request.params.id,
+      urlPattern: request.params.urlPattern,
+      all: request.params.all,
+    });
+    response.appendResponseLine(
+      removed.length
+        ? `Cleared ${removed.length} response replacement(s): ${removed.map(item => `#${item.id}`).join(', ')}.`
+        : 'No matching response replacements found.',
+    );
   },
 });

@@ -50,6 +50,23 @@ export interface DevToolsData {
   cdpBackendNodeId?: number;
 }
 
+export interface ResponseReplacementInput {
+  urlPattern: string;
+  body: string;
+  regex?: boolean;
+  status?: number;
+  contentType?: string;
+  headers?: Record<string, string>;
+  resourceTypes?: string[];
+  once?: boolean;
+}
+
+export interface ResponseReplacementInfo extends ResponseReplacementInput {
+  id: number;
+  active: boolean;
+  hitCount: number;
+}
+
 export interface Response {
   appendResponseLine(value: string): void;
   setIncludePages(value: boolean): void;
@@ -170,6 +187,24 @@ export type Context = Readonly<{
    * Also reinitializes the debugger for the main page's CDP session.
    */
   resetSelectedFrame(): void;
+  /**
+   * Install a response replacement rule for matching requests on the selected page.
+   */
+  addResponseReplacement(
+    replacement: ResponseReplacementInput,
+  ): Promise<ResponseReplacementInfo>;
+  /**
+   * List response replacement rules.
+   */
+  listResponseReplacements(): ResponseReplacementInfo[];
+  /**
+   * Clear response replacement rules.
+   */
+  clearResponseReplacements(filter?: {
+    id?: number;
+    urlPattern?: string;
+    all?: boolean;
+  }): Promise<ResponseReplacementInfo[]>;
 }>;
 
 export function defineTool<Schema extends zod.ZodRawShape>(
